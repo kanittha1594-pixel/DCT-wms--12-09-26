@@ -1,0 +1,7 @@
+{
+  "name": "WMS ระบบบริหารคลังพัสดุ",
+  "description": "ระบบบริหารคลังพัสดุ WMS เชื่อมต่อ Supabase สำหรับวางแผนเบิก ตัดจ่ายพัสดุ โอนย้าย 12 เขต ตรวจสอบ Stock SAP และคลังจริง",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
