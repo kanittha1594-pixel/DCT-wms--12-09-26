@@ -4,12 +4,15 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 const envUrl = import.meta.env.VITE_SUPABASE_URL;
 const envAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+export const DEFAULT_SUPABASE_URL = 'https://ybrwyexvhxasulbcwmsn.supabase.co';
+export const DEFAULT_SUPABASE_KEY = 'sb_publishable_6f9kZK_Jm50pliCKoZPFzg_94Wb6bsl';
+
 export function getStoredSupabaseConfig(): { url: string; anonKey: string } {
   const localUrl = localStorage.getItem('wms_supabase_url');
   const localKey = localStorage.getItem('wms_supabase_key');
   return {
-    url: localUrl || envUrl || '',
-    anonKey: localKey || envAnonKey || '',
+    url: localUrl || envUrl || DEFAULT_SUPABASE_URL,
+    anonKey: localKey || envAnonKey || DEFAULT_SUPABASE_KEY,
   };
 }
 
@@ -45,22 +48,23 @@ export function getSupabase(): SupabaseClient | null {
   }
 }
 
-export async function testSupabaseConnection(url: string, key: string): Promise<{ success: boolean; message: string }> {
+export async function testSupabaseConnection(url: string, key: string): Promise<{ success: boolean; message: string; tablesExist: boolean }> {
   try {
     const client = createClient(url, key, { auth: { persistSession: false } });
     const { error } = await client.from('materials').select('id').limit(1);
     if (error) {
-      if (error.code === '42P01') {
+      if (error.code === '42P01' || error.code === 'PGRST205') {
         return {
           success: true,
-          message: 'เชื่อมต่อ Supabase สำเร็จ แต่ยังไม่ได้สร้างตาราง (กรุณารัน SQL Script ด้านล่าง)',
+          tablesExist: false,
+          message: 'เชื่อมต่อ Supabase ได้แล้ว แต่ยังไม่ได้สร้างตารางข้อมูลใน SQL Editor (ระบบทำงานในโหมด Local Repository ได้ตามปกติ 100%)',
         };
       }
-      return { success: false, message: `Supabase Error: ${error.message} (${error.code || ''})` };
+      return { success: false, tablesExist: false, message: `Supabase Error: ${error.message} (${error.code || ''})` };
     }
-    return { success: true, message: 'เชื่อมต่อ Supabase สำเร็จและพบตารางข้อมูลเรียบร้อยแล้ว' };
+    return { success: true, tablesExist: true, message: 'เชื่อมต่อ Supabase สำเร็จและพบตารางข้อมูลพร้อมทำงานเรียบร้อยแล้ว' };
   } catch (e: any) {
-    return { success: false, message: e.message || 'ไม่สามารถเชื่อมต่อไปยัง Supabase ได้' };
+    return { success: false, tablesExist: false, message: e.message || 'ไม่สามารถเชื่อมต่อไปยัง Supabase ได้' };
   }
 }
 
@@ -122,17 +126,20 @@ CREATE TABLE IF NOT EXISTS public.pick_transactions (
 CREATE TABLE IF NOT EXISTS public.transfers_in (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     ddoc_no TEXT NOT NULL,
+    ddoc_date DATE DEFAULT CURRENT_DATE,
     material_id TEXT NOT NULL REFERENCES public.materials(id),
     material_description TEXT NOT NULL,
     demand_qty NUMERIC NOT NULL CHECK (demand_qty > 0),
-    origin_district TEXT CHECK (origin_district IN ('น1', 'น2', 'น3', 'ฉ1', 'ฉ2', 'ฉ3', 'ก1', 'ก2', 'ก3', 'ต1', 'ต2', 'ต3')),
+    origin_district TEXT,
     sto_no TEXT,
     transport_method TEXT,
-    status TEXT NOT NULL DEFAULT 'REQUESTED' CHECK (status IN ('REQUESTED', 'ALLOCATED', 'STO_ISSUED', 'IN_TRANSIT', 'RECEIVED')),
+    status TEXT NOT NULL DEFAULT 'REQUESTED',
     allocated_qty NUMERIC,
     received_qty NUMERIC,
     received_at TIMESTAMPTZ,
     stock_updated BOOLEAN NOT NULL DEFAULT FALSE,
+    purpose_note TEXT,
+    allocations JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_ddoc_item UNIQUE (ddoc_no, material_id)
 );

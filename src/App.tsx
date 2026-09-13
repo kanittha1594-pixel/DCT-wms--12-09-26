@@ -16,7 +16,7 @@ import {
   fetchStockHistory,
   resetAllSystemData,
 } from './lib/storage';
-import { getSupabase } from './lib/supabase';
+import { getSupabase, testSupabaseConnection } from './lib/supabase';
 import { Navbar, ActiveTab } from './components/Navbar';
 import { StockReportView } from './components/StockReportView';
 import { DemandPlanningView } from './components/DemandPlanningView';
@@ -53,6 +53,29 @@ export default function App() {
 
   // Check Supabase status
   const isSupabaseConnected = Boolean(getSupabase());
+  const [supabaseStatus, setSupabaseStatus] = useState<'connected' | 'needs_setup' | 'local'>('local');
+
+  const checkDbStatus = useCallback(async () => {
+    const client = getSupabase();
+    if (!client) {
+      setSupabaseStatus('local');
+      return;
+    }
+    try {
+      const url = localStorage.getItem('supabase_url') || import.meta.env.VITE_SUPABASE_URL || 'https://ybrwyexvhxasulbcwmsn.supabase.co';
+      const key = localStorage.getItem('supabase_anon_key') || import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_6f9kZK_Jm50pliCKoZPFzg_94Wb6bsl';
+      const test = await testSupabaseConnection(url, key);
+      if (test.success && test.tablesExist) {
+        setSupabaseStatus('connected');
+      } else if (test.success && !test.tablesExist) {
+        setSupabaseStatus('needs_setup');
+      } else {
+        setSupabaseStatus('local');
+      }
+    } catch {
+      setSupabaseStatus('local');
+    }
+  }, []);
 
   const showNotification = useCallback((message: string, type: 'success' | 'error') => {
     const id = crypto.randomUUID();
@@ -64,6 +87,7 @@ export default function App() {
 
   const refreshAllData = useCallback(async () => {
     try {
+      checkDbStatus();
       const [mats, dems, picks, trIn, trOut, hist] = await Promise.all([
         fetchMaterials(),
         fetchDemands(),
@@ -85,7 +109,7 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [showNotification]);
+  }, [showNotification, checkDbStatus]);
 
   useEffect(() => {
     refreshAllData();
@@ -143,6 +167,7 @@ export default function App() {
         isAdmin={isAdmin}
         setIsAdmin={setIsAdmin}
         isSupabaseConnected={isSupabaseConnected}
+        supabaseStatus={supabaseStatus}
         onOpenSupabaseModal={() => setIsSupabaseModalOpen(true)}
         onResetData={handleResetData}
       />

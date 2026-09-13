@@ -137,6 +137,9 @@ export async function updateMaterialInitialStock(
 // DEMANDS (วางแผนเบิกพัสดุ)
 // -------------------------------------------------------------
 export async function fetchDemands(): Promise<Demand[]> {
+  const raw = localStorage.getItem(STORAGE_KEYS.DEMANDS);
+  const localDemands: Demand[] = raw ? JSON.parse(raw) : [];
+
   const supabase = getSupabase();
   if (supabase) {
     try {
@@ -145,14 +148,20 @@ export async function fetchDemands(): Promise<Demand[]> {
         .select('*')
         .order('created_at', { ascending: false });
       if (!error && data) {
-        return data as Demand[];
+        if (data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.DEMANDS, JSON.stringify(data));
+          return data as Demand[];
+        } else if (localDemands.length > 0) {
+          // Table in Supabase is currently empty, push existing local demands to Supabase in background
+          supabase.from('demands').upsert(localDemands).then(() => {}, () => {});
+          return localDemands;
+        }
       }
     } catch (e) {
-      console.warn(e);
+      console.warn('Supabase fetchDemands error, using local:', e);
     }
   }
-  const raw = localStorage.getItem(STORAGE_KEYS.DEMANDS);
-  return raw ? JSON.parse(raw) : [];
+  return localDemands;
 }
 
 // Helper to find material by exact or normalized code (e.g. "2-29-005-0039" or "2290050039")
@@ -231,20 +240,23 @@ export async function saveDemand(
     created_by: demandData.created_by || 'User',
   };
 
+  // 1. ALWAYS persist to LocalStorage immediately (guaranteed never to fail)
+  existingDemands.unshift(newDemand);
+  localStorage.setItem(STORAGE_KEYS.DEMANDS, JSON.stringify(existingDemands));
+
+  // 2. Sync to Supabase in background (failures do not block local operation)
   const supabase = getSupabase();
   if (supabase) {
     try {
       const { error } = await supabase.from('demands').insert(newDemand);
       if (error) {
-        return { success: false, error: `Supabase Insert Error: ${error.message}` };
+        console.warn('Supabase insert note (data preserved locally):', error.message);
       }
     } catch (e: any) {
-      console.warn('Supabase insert failed, saving locally:', e);
+      console.warn('Supabase insert failed, preserved locally:', e);
     }
   }
 
-  existingDemands.unshift(newDemand);
-  localStorage.setItem(STORAGE_KEYS.DEMANDS, JSON.stringify(existingDemands));
   return { success: true, demand: newDemand };
 }
 
@@ -341,6 +353,9 @@ export async function deleteDemand(
 // PICK TRANSACTIONS (ตัดจ่ายพัสดุ / หยิบจริง)
 // -------------------------------------------------------------
 export async function fetchPickTransactions(): Promise<PickTransaction[]> {
+  const raw = localStorage.getItem(STORAGE_KEYS.PICKS);
+  const localPicks: PickTransaction[] = raw ? JSON.parse(raw) : [];
+
   const supabase = getSupabase();
   if (supabase) {
     try {
@@ -349,14 +364,19 @@ export async function fetchPickTransactions(): Promise<PickTransaction[]> {
         .select('*')
         .order('created_at', { ascending: false });
       if (!error && data) {
-        return data as PickTransaction[];
+        if (data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.PICKS, JSON.stringify(data));
+          return data as PickTransaction[];
+        } else if (localPicks.length > 0) {
+          supabase.from('pick_transactions').upsert(localPicks).then(() => {}, () => {});
+          return localPicks;
+        }
       }
     } catch (e) {
-      console.warn(e);
+      console.warn('Supabase fetchPickTransactions error, using local:', e);
     }
   }
-  const raw = localStorage.getItem(STORAGE_KEYS.PICKS);
-  return raw ? JSON.parse(raw) : [];
+  return localPicks;
 }
 
 export async function executePickDisbursement(params: {
@@ -694,6 +714,9 @@ export async function deletePickTransaction(pickId: string): Promise<{ success: 
 // 5 ขั้นตอน: ขอจัดสรร DDOC -> เช็คเขตที่รับได้ -> STO -> ขนย้าย -> ตรวจรับเข้าคลัง
 // -------------------------------------------------------------
 export async function fetchTransfersIn(): Promise<TransferIn[]> {
+  const raw = localStorage.getItem(STORAGE_KEYS.TRANSFERS_IN);
+  const localTransfers: TransferIn[] = raw ? JSON.parse(raw) : [];
+
   const supabase = getSupabase();
   if (supabase) {
     try {
@@ -702,14 +725,19 @@ export async function fetchTransfersIn(): Promise<TransferIn[]> {
         .select('*')
         .order('created_at', { ascending: false });
       if (!error && data) {
-        return data as TransferIn[];
+        if (data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.TRANSFERS_IN, JSON.stringify(data));
+          return data as TransferIn[];
+        } else if (localTransfers.length > 0) {
+          supabase.from('transfers_in').upsert(localTransfers).then(() => {}, () => {});
+          return localTransfers;
+        }
       }
     } catch (e) {
-      console.warn(e);
+      console.warn('Supabase fetchTransfersIn error, using local:', e);
     }
   }
-  const raw = localStorage.getItem(STORAGE_KEYS.TRANSFERS_IN);
-  return raw ? JSON.parse(raw) : [];
+  return localTransfers;
 }
 
 export async function createTransferIn(params: {
@@ -1049,6 +1077,9 @@ export async function deleteTransferIn(transferId: string): Promise<{ success: b
 // TRANSFERS OUT (Tracking การโอนของจาก ต.1 ไปยังเขตอื่น)
 // -------------------------------------------------------------
 export async function fetchTransfersOut(): Promise<TransferOutOrder[]> {
+  const raw = localStorage.getItem(STORAGE_KEYS.TRANSFERS_OUT);
+  const localTransfersOut: TransferOutOrder[] = raw ? JSON.parse(raw) : [];
+
   const supabase = getSupabase();
   if (supabase) {
     try {
@@ -1057,14 +1088,18 @@ export async function fetchTransfersOut(): Promise<TransferOutOrder[]> {
         .select('*, items:transfer_out_items(*)')
         .order('created_at', { ascending: false });
       if (!error && data) {
-        return data as TransferOutOrder[];
+        if (data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.TRANSFERS_OUT, JSON.stringify(data));
+          return data as TransferOutOrder[];
+        } else if (localTransfersOut.length > 0) {
+          return localTransfersOut;
+        }
       }
     } catch (e) {
-      console.warn(e);
+      console.warn('Supabase fetchTransfersOut error, using local:', e);
     }
   }
-  const raw = localStorage.getItem(STORAGE_KEYS.TRANSFERS_OUT);
-  return raw ? JSON.parse(raw) : [];
+  return localTransfersOut;
 }
 
 export async function createTransferOutOrder(orderData: {
@@ -1316,6 +1351,9 @@ export async function deleteTransferOutOrder(orderId: string): Promise<{ success
 // STOCK HISTORY & AUDIT RECONCILIATION
 // -------------------------------------------------------------
 export async function fetchStockHistory(): Promise<StockHistoryItem[]> {
+  const raw = localStorage.getItem(STORAGE_KEYS.STOCK_HISTORY);
+  const localHist: StockHistoryItem[] = raw ? JSON.parse(raw) : [];
+
   const supabase = getSupabase();
   if (supabase) {
     try {
@@ -1324,14 +1362,18 @@ export async function fetchStockHistory(): Promise<StockHistoryItem[]> {
         .select('*')
         .order('created_at', { ascending: false });
       if (!error && data) {
-        return data as StockHistoryItem[];
+        if (data.length > 0) {
+          localStorage.setItem(STORAGE_KEYS.STOCK_HISTORY, JSON.stringify(data));
+          return data as StockHistoryItem[];
+        } else if (localHist.length > 0) {
+          return localHist;
+        }
       }
     } catch (e) {
-      console.warn(e);
+      console.warn('Supabase fetchStockHistory error, using local:', e);
     }
   }
-  const raw = localStorage.getItem(STORAGE_KEYS.STOCK_HISTORY);
-  return raw ? JSON.parse(raw) : [];
+  return localHist;
 }
 
 export async function addStockHistory(

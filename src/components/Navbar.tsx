@@ -28,6 +28,7 @@ interface NavbarProps {
   isAdmin: boolean;
   setIsAdmin: (admin: boolean) => void;
   isSupabaseConnected: boolean;
+  supabaseStatus?: 'connected' | 'needs_setup' | 'local';
   onOpenSupabaseModal: () => void;
   onResetData?: () => void;
 }
@@ -38,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isAdmin,
   setIsAdmin,
   isSupabaseConnected,
+  supabaseStatus = 'local',
   onOpenSupabaseModal,
   onResetData,
 }) => {
@@ -83,14 +85,22 @@ export const Navbar: React.FC<NavbarProps> = ({
               id="btn-supabase-status"
               onClick={onOpenSupabaseModal}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors cursor-pointer shadow-2xs ${
-                isSupabaseConnected
+                supabaseStatus === 'connected'
                   ? 'bg-teal-50 text-teal-700 border-teal-200/80 hover:bg-teal-100/60'
-                  : 'bg-amber-50 text-amber-800 border-amber-200/80 hover:bg-amber-100/60'
+                  : supabaseStatus === 'needs_setup'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200/80 hover:bg-amber-100/60'
+                  : 'bg-slate-50 text-slate-700 border-slate-200/80 hover:bg-slate-100/60'
               }`}
               title="ตั้งค่าฐานข้อมูล Supabase / ดู SQL Schema"
             >
               <Database className="w-3.5 h-3.5" />
-              <span>{isSupabaseConnected ? 'Supabase: Connected' : 'DB: Local Repo / Setup SQL'}</span>
+              <span>
+                {supabaseStatus === 'connected'
+                  ? 'Supabase: Online (Sync)'
+                  : supabaseStatus === 'needs_setup'
+                  ? 'DB: Local Ready (รอรัน SQL)'
+                  : 'DB: Local Repo'}
+              </span>
             </button>
 
             {/* Reset Data Button */}
