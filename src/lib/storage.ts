@@ -4,6 +4,8 @@ import {
   Demand,
   PickTransaction,
   TransferIn,
+  TransferInStatus,
+  DistrictAllocation,
   TransferOutOrder,
   StockHistoryItem,
   INITIAL_35_MATERIALS,
@@ -712,13 +714,73 @@ export async function fetchTransfersIn(): Promise<TransferIn[]> {
 
 export async function createTransferIn(params: {
   ddoc_no: string;
+  ddoc_date?: string;
   material_id: string;
   demand_qty: number;
+  purpose_note?: string;
+  allocations?: DistrictAllocation[];
 }): Promise<{ success: boolean; error?: string }> {
-  return createTransferInMulti({
-    ddoc_no: params.ddoc_no,
-    items: [{ material_id: params.material_id, demand_qty: params.demand_qty }],
-  });
+  const { ddoc_no, ddoc_date, material_id, demand_qty, purpose_note, allocations } = params;
+  if (!ddoc_no.trim()) {
+    return { success: false, error: 'กรุณากรอกเลขที่หนังสือ DDOC' };
+  }
+  const qty = Number(demand_qty);
+  if (!qty || qty <= 0) {
+    return { success: false, error: 'จำนวนที่ต้องการขอรับจัดสรรต้องมากกว่า 0' };
+  }
+
+  const materials = await fetchMaterials();
+  const mat = materials.find((m) => m.id === material_id) || findMatchingMaterial(material_id, materials);
+  if (!mat) {
+    return { success: false, error: `ไม่พบรหัสวัสดุ ${material_id}` };
+  }
+
+  const existing = await fetchTransfersIn();
+  const isDuplicate = existing.some(
+    (t) => t.ddoc_no.trim().toLowerCase() === ddoc_no.trim().toLowerCase() && t.material_id === mat.id
+  );
+  if (isDuplicate) {
+    return { success: false, error: `เลขที่ DDOC ${ddoc_no} มีรายการพัสดุ ${mat.id} อยู่แล้ว (ห้ามซ้ำใน DDOC เดียวกัน)` };
+  }
+
+  const validAllocations = (allocations || []).filter((a) => Number(a.quantity) > 0);
+  const totalAlloc = validAllocations.reduce((sum, a) => sum + (Number(a.quantity) || 0), 0);
+
+  let initialStatus: TransferInStatus = 'REQUESTED';
+  if (validAllocations.length > 0) {
+    const hasAllSto = validAllocations.every((a) => a.sto_no && a.sto_no.trim().length > 0);
+    initialStatus = hasAllSto ? 'STO_ISSUED' : 'ALLOCATED';
+  }
+
+  const newTransfer: TransferIn = {
+    id: crypto.randomUUID(),
+    ddoc_no: ddoc_no.trim(),
+    ddoc_date: ddoc_date || new Date().toISOString().split('T')[0],
+    material_id: mat.id,
+    material_description: mat.description,
+    demand_qty: qty,
+    purpose_note: purpose_note?.trim() || undefined,
+    allocations: validAllocations.length > 0 ? validAllocations : undefined,
+    allocated_qty: totalAlloc > 0 ? totalAlloc : undefined,
+    origin_district: validAllocations[0]?.district,
+    sto_no: validAllocations.map((a) => a.sto_no?.trim()).filter(Boolean).join(', ') || undefined,
+    status: initialStatus,
+    stock_updated: false,
+    created_at: new Date().toISOString(),
+  };
+
+  const supabase = getSupabase();
+  if (supabase) {
+    try {
+      await supabase.from('transfers_in').insert([newTransfer]);
+    } catch (e) {
+      console.warn(e);
+    }
+  }
+
+  existing.unshift(newTransfer);
+  localStorage.setItem(STORAGE_KEYS.TRANSFERS_IN, JSON.stringify(existing));
+  return { success: true };
 }
 
 // 1 เลข DDOC สามารถขอรับพัสดุได้หลายชนิด (Multi-Item)

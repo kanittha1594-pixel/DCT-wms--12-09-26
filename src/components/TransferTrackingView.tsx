@@ -62,22 +62,42 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
 
   // --- Incoming (Part 1: Transfer In) States ---
   const [showAddInModal, setShowAddInModal] = useState(false);
+  // Single-material addition: "**ให้กรอกครั้งละ 1 รายการวัสดุเท่านั้น"
   const [inDdocNo, setInDdocNo] = useState('');
-  const [inItems, setInItems] = useState<Array<{ material_id: string; demand_qty: number }>>([
-    { material_id: materials[0]?.id || '', demand_qty: 100 },
-  ]);
+  const [inDdocDate, setInDdocDate] = useState(new Date().toISOString().split('T')[0]);
+  const [inMaterialId, setInMaterialId] = useState(materials[0]?.id || '');
+  const [inDemandQty, setInDemandQty] = useState<number | ''>(100);
+  const [inPurposeNote, setInPurposeNote] = useState('');
+  // District allocations during add (optional: "กรอกภายหลังได้")
+  const [inSpecifyDistrictsNow, setInSpecifyDistrictsNow] = useState(false);
+  const [inAllocations, setInAllocations] = useState<
+    Array<{
+      district: District;
+      quantity: number;
+      sto_no: string;
+      receive_date: string;
+      notes: string;
+    }>
+  >([]);
+
   const [inSearchQuery, setInSearchQuery] = useState('');
-  const [inStatusFilter, setInStatusFilter] = useState<'all' | 'pending' | 'received'>('all');
+  const [inStatusFilter, setInStatusFilter] = useState<'all' | 'unallocated' | 'pending' | 'received'>('all');
 
   // Multi-district & STO & Transport Modal for Incoming Material
   const [activeInTransfer, setActiveInTransfer] = useState<TransferIn | null>(null);
+  const [editDdocNo, setEditDdocNo] = useState('');
+  const [editDdocDate, setEditDdocDate] = useState('');
+  const [editDemandQty, setEditDemandQty] = useState<number | ''>(0);
+  const [editPurposeNote, setEditPurposeNote] = useState('');
   const [allocationsList, setAllocationsList] = useState<
     Array<{
       district: District;
       quantity: number;
       sto_no: string;
-      transport_method: string;
-      transport_date: string;
+      receive_date: string;
+      notes: string;
+      transport_method?: string;
+      transport_date?: string;
     }>
   >([]);
   const [isProcessingIn, setIsProcessingIn] = useState(false);
@@ -110,32 +130,56 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
   const [isDeletingOut, setIsDeletingOut] = useState(false);
 
   // ==========================================
-  // INCOMING TRANSFERS HANDLERS (Multi-Item & Multi-District)
+  // INCOMING TRANSFERS HANDLERS (Master Table & Single-Item)
   // ==========================================
   const handleOpenAddInModal = (presetDdoc?: string) => {
     setInDdocNo(presetDdoc || '');
-    setInItems([{ material_id: materials[0]?.id || '', demand_qty: 100 }]);
+    setInDdocDate(new Date().toISOString().split('T')[0]);
+    setInMaterialId(materials[0]?.id || '');
+    setInDemandQty(100);
+    setInPurposeNote('');
+    setInSpecifyDistrictsNow(false);
+    setInAllocations([]);
     setShowAddInModal(true);
   };
 
-  const handleAddInItemRow = () => {
-    const used = new Set(inItems.map((it) => it.material_id));
-    const nextMat = materials.find((m) => !used.has(m.id)) || materials[0];
-    setInItems([...inItems, { material_id: nextMat?.id || '', demand_qty: 100 }]);
+  const handleAddInAllocationRow = () => {
+    const used = new Set(inAllocations.map((a) => a.district));
+    const nextDistrict = DISTRICTS.find((d) => d !== 'ต1' && !used.has(d)) || 'น1';
+    const currentAllocTotal = inAllocations.reduce((sum, a) => sum + (Number(a.quantity) || 0), 0);
+    const demand = Number(inDemandQty) || 0;
+    const remaining = Math.max(0, demand - currentAllocTotal);
+    setInAllocations([
+      ...inAllocations,
+      {
+        district: nextDistrict,
+        quantity: remaining > 0 ? remaining : 50,
+        sto_no: '',
+        receive_date: '',
+        notes: '',
+      },
+    ]);
   };
 
-  const handleRemoveInItemRow = (index: number) => {
-    if (inItems.length <= 1) {
-      showNotification('ต้องมีรายการพัสดุอย่างน้อย 1 รายการ', 'error');
-      return;
+  const handleRemoveInAllocationRow = (index: number) => {
+    setInAllocations(inAllocations.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateInAllocationRow = (
+    index: number,
+    field: 'district' | 'quantity' | 'sto_no' | 'receive_date' | 'notes',
+    value: any
+  ) => {
+    const updated = [...inAllocations];
+    if (field === 'district') {
+      const isDup = inAllocations.some((a, i) => i !== index && a.district === value);
+      if (isDup) {
+        showNotification(`เขต ${DISTRICT_LABELS[value as District] || value} ถูกเลือกแล้ว`, 'error');
+        return;
+      }
     }
-    setInItems(inItems.filter((_, i) => i !== index));
-  };
-
-  const handleUpdateInItem = (index: number, field: 'material_id' | 'demand_qty', val: any) => {
-    const updated = [...inItems];
-    updated[index] = { ...updated[index], [field]: val };
-    setInItems(updated);
+    updated[index] = { ...updated[index], [field]: value };
+    setInAllocations(updated);
   };
 
   const handleCreateTransferIn = async (e: React.FormEvent) => {
@@ -144,38 +188,72 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       showNotification('กรุณากรอกเลขที่หนังสือ DDOC', 'error');
       return;
     }
-    for (const it of inItems) {
-      const q = Number(it.demand_qty);
-      if (isNaN(q) || q <= 0) {
-        showNotification('จำนวนที่ต้องการขอจัดสรรต้องมากกว่า 0 ทุกรายการ', 'error');
-        return;
-      }
+    const qty = Number(inDemandQty);
+    if (!qty || qty <= 0) {
+      showNotification('กรุณาระบุจำนวนที่ต้องการขอรับโอนให้มากกว่า 0', 'error');
+      return;
+    }
+    if (!inMaterialId) {
+      showNotification('กรุณาเลือกรหัสพัสดุ', 'error');
+      return;
     }
 
-    const matSet = new Set<string>();
-    for (const it of inItems) {
-      if (matSet.has(it.material_id)) {
-        showNotification(`มีรหัสพัสดุซ้ำกันในรายการ: ${it.material_id}`, 'error');
+    // Validate district allocations if user decided to specify them now
+    const validAllocations: DistrictAllocation[] = [];
+    if (inSpecifyDistrictsNow && inAllocations.length > 0) {
+      const districtSet = new Set<string>();
+      for (const a of inAllocations) {
+        if (districtSet.has(a.district)) {
+          showNotification(`มีเขตซ้ำกัน: ${DISTRICT_LABELS[a.district] || a.district}`, 'error');
+          return;
+        }
+        districtSet.add(a.district);
+        const q = Number(a.quantity);
+        if (isNaN(q) || q <= 0) {
+          showNotification('จำนวนที่จัดสรรของแต่ละเขตต้องมากกว่า 0', 'error');
+          return;
+        }
+        validAllocations.push({
+          district: a.district,
+          quantity: q,
+          sto_no: a.sto_no.trim() || undefined,
+          receive_date: a.receive_date.trim() || undefined,
+          notes: a.notes.trim() || undefined,
+        });
+      }
+
+      const totalAlloc = validAllocations.reduce((sum, a) => sum + a.quantity, 0);
+      if (totalAlloc > qty) {
+        showNotification(
+          `ยอดรวมจัดสรร (${totalAlloc.toLocaleString()}) เกินกว่ายอดที่ขอ (${qty.toLocaleString()})`,
+          'error'
+        );
         return;
       }
-      matSet.add(it.material_id);
     }
 
     setIsProcessingIn(true);
     try {
-      const res = await createTransferInMulti({
+      const res = await createTransferIn({
         ddoc_no: inDdocNo.trim(),
-        items: inItems,
+        ddoc_date: inDdocDate,
+        material_id: inMaterialId,
+        demand_qty: qty,
+        purpose_note: inPurposeNote.trim() || undefined,
+        allocations: validAllocations.length > 0 ? validAllocations : undefined,
       });
 
       if (res.success) {
         showNotification(
-          `บันทึกขอจัดสรร DDOC ${inDdocNo.trim()} สำเร็จ (${inItems.length} ชนิดพัสดุ)`,
+          `บันทึกขอรับโอนพัสดุ ${inMaterialId} สำเร็จ (เลข DDOC: ${inDdocNo.trim()})`,
           'success'
         );
         setShowAddInModal(false);
         setInDdocNo('');
-        setInItems([{ material_id: materials[0]?.id || '', demand_qty: 100 }]);
+        setInDemandQty(100);
+        setInPurposeNote('');
+        setInSpecifyDistrictsNow(false);
+        setInAllocations([]);
         await onRefresh();
       } else {
         showNotification(res.error || 'สร้างรายการไม่สำเร็จ', 'error');
@@ -189,7 +267,10 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
 
   const handleOpenAllocationModal = (transfer: TransferIn) => {
     setActiveInTransfer(transfer);
-    const today = new Date().toISOString().split('T')[0];
+    setEditDdocNo(transfer.ddoc_no);
+    setEditDdocDate(transfer.ddoc_date || transfer.created_at.split('T')[0]);
+    setEditDemandQty(transfer.demand_qty);
+    setEditPurposeNote(transfer.purpose_note || '');
 
     if (transfer.allocations && transfer.allocations.length > 0) {
       setAllocationsList(
@@ -197,8 +278,10 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
           district: a.district,
           quantity: Number(a.quantity) || 0,
           sto_no: a.sto_no || transfer.sto_no || '',
-          transport_method: a.transport_method || transfer.transport_method || 'รถบรรทุกการไฟฟ้า',
-          transport_date: a.transport_date || today,
+          receive_date: a.receive_date || '',
+          notes: a.notes || '',
+          transport_method: a.transport_method || transfer.transport_method || '',
+          transport_date: a.transport_date || '',
         }))
       );
     } else if (transfer.origin_district) {
@@ -207,53 +290,45 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
           district: transfer.origin_district,
           quantity: transfer.allocated_qty || transfer.demand_qty,
           sto_no: transfer.sto_no || '',
-          transport_method: transfer.transport_method || 'รถบรรทุกการไฟฟ้า',
-          transport_date: today,
+          receive_date: '',
+          notes: '',
+          transport_method: transfer.transport_method || '',
+          transport_date: '',
         },
       ]);
     } else {
-      setAllocationsList([
-        {
-          district: 'น1',
-          quantity: transfer.demand_qty,
-          sto_no: '',
-          transport_method: 'รถบรรทุกการไฟฟ้า',
-          transport_date: today,
-        },
-      ]);
+      setAllocationsList([]);
     }
   };
 
   const handleAddAllocationRow = () => {
     if (!activeInTransfer) return;
     const usedDistricts = new Set(allocationsList.map((a) => a.district));
-    const nextDistrict = DISTRICTS.find((d) => !usedDistricts.has(d)) || 'น1';
+    const nextDistrict = DISTRICTS.find((d) => d !== 'ต1' && !usedDistricts.has(d)) || 'น1';
     const currentTotal = allocationsList.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
-    const remaining = Math.max(0, activeInTransfer.demand_qty - currentTotal);
-    const today = new Date().toISOString().split('T')[0];
+    const demand = Number(editDemandQty) || activeInTransfer.demand_qty;
+    const remaining = Math.max(0, demand - currentTotal);
     setAllocationsList([
       ...allocationsList,
       {
         district: nextDistrict,
-        quantity: remaining,
+        quantity: remaining > 0 ? remaining : 50,
         sto_no: '',
-        transport_method: 'รถบรรทุกการไฟฟ้า',
-        transport_date: today,
+        receive_date: '',
+        notes: '',
+        transport_method: '',
+        transport_date: '',
       },
     ]);
   };
 
   const handleRemoveAllocationRow = (index: number) => {
-    if (allocationsList.length <= 1) {
-      showNotification('ต้องระบุอย่างน้อย 1 เขต', 'error');
-      return;
-    }
     setAllocationsList(allocationsList.filter((_, i) => i !== index));
   };
 
   const handleUpdateAllocationRow = (
     index: number,
-    field: 'district' | 'quantity' | 'sto_no' | 'transport_method' | 'transport_date',
+    field: 'district' | 'quantity' | 'sto_no' | 'receive_date' | 'notes' | 'transport_method' | 'transport_date',
     value: any
   ) => {
     const updated = [...allocationsList];
@@ -271,6 +346,16 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
   const handleSaveAllocations = async (andReceive: boolean = false) => {
     if (!activeInTransfer) return;
 
+    if (!editDdocNo.trim()) {
+      showNotification('กรุณาระบุเลขที่ DDOC', 'error');
+      return;
+    }
+    const demand = Number(editDemandQty);
+    if (!demand || demand <= 0) {
+      showNotification('จำนวนที่ขอต้องมากกว่า 0', 'error');
+      return;
+    }
+
     const districtSet = new Set<string>();
     for (const itm of allocationsList) {
       if (districtSet.has(itm.district)) {
@@ -286,14 +371,15 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
     }
 
     const totalAlloc = allocationsList.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
-    if (totalAlloc <= 0) {
-      showNotification('ยอดจัดสรรรวมต้องมากกว่า 0', 'error');
+
+    if (andReceive && totalAlloc <= 0) {
+      showNotification('ต้องระบุเขตและยอดจัดสรรอย่างน้อย 1 รายการเพื่อตรวจรับเข้าสต็อก', 'error');
       return;
     }
 
-    if (totalAlloc > activeInTransfer.demand_qty) {
+    if (totalAlloc > demand) {
       showNotification(
-        `ยอดจัดสรรรวม (${totalAlloc.toLocaleString()}) เกินจำนวนที่ขอ (${activeInTransfer.demand_qty.toLocaleString()})`,
+        `ยอดจัดสรรรวม (${totalAlloc.toLocaleString()}) เกินจำนวนที่ขอ (${demand.toLocaleString()})`,
         'error'
       );
       return;
@@ -302,18 +388,23 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
     setIsProcessingIn(true);
     try {
       const updates: Partial<TransferIn> = {
+        ddoc_no: editDdocNo.trim(),
+        ddoc_date: editDdocDate || undefined,
+        demand_qty: demand,
+        purpose_note: editPurposeNote.trim() || undefined,
         allocations: allocationsList.map((a) => ({
           district: a.district,
           quantity: Number(a.quantity) || 0,
           sto_no: a.sto_no.trim() || undefined,
-          transport_method: a.transport_method.trim() || undefined,
-          transport_date: a.transport_date || undefined,
+          receive_date: a.receive_date.trim() || undefined,
+          notes: a.notes.trim() || undefined,
+          transport_method: a.transport_method?.trim() || undefined,
+          transport_date: a.transport_date?.trim() || undefined,
           is_received: andReceive ? true : undefined,
         })),
-        allocated_qty: totalAlloc,
+        allocated_qty: totalAlloc > 0 ? totalAlloc : undefined,
         origin_district: allocationsList[0]?.district,
         sto_no: allocationsList.map((a) => a.sto_no.trim()).filter(Boolean).join(', ') || undefined,
-        transport_method: allocationsList.map((a) => a.transport_method.trim()).filter(Boolean).join(', ') || undefined,
       };
 
       if (andReceive) {
@@ -325,14 +416,11 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
         updates.status = 'RECEIVED';
         updates.received_qty = totalAlloc;
       } else {
-        const hasAllSto = allocationsList.every((a) => a.sto_no && a.sto_no.trim().length > 0);
-        const hasTransport = allocationsList.some((a) => a.transport_method && a.transport_method.trim().length > 0);
-        if (hasTransport) {
-          updates.status = 'IN_TRANSIT';
-        } else if (hasAllSto) {
-          updates.status = 'STO_ISSUED';
+        if (allocationsList.length === 0 || totalAlloc === 0) {
+          updates.status = 'REQUESTED';
         } else {
-          updates.status = 'ALLOCATED';
+          const hasAllSto = allocationsList.every((a) => a.sto_no && a.sto_no.trim().length > 0);
+          updates.status = hasAllSto ? 'STO_ISSUED' : 'ALLOCATED';
         }
       }
 
@@ -340,8 +428,8 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       if (res.success) {
         showNotification(
           andReceive
-            ? `ตรวจรับพัสดุเข้าคลังเรียบร้อย และเพิ่ม Stock ${totalAlloc.toLocaleString()} หน่วย (ตามยอดจัดสรรจริง)`
-            : `บันทึกข้อมูลการจัดสรร (${allocationsList.length} เขต) เรียบร้อย`,
+            ? `ตรวจรับพัสดุเข้าคลัง ต.1 เรียบร้อย (+Stock เพิ่ม ${totalAlloc.toLocaleString()} หน่วย)`
+            : `บันทึกข้อมูลจัดสรรสำเร็จ`,
           'success'
         );
         setActiveInTransfer(null);
@@ -363,7 +451,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
         : item.allocations?.reduce((s, a) => s + (Number(a.quantity) || 0), 0) || 0;
 
     if (totalAlloc <= 0) {
-      showNotification('กรุณาระบุเขตและจำนวนที่จัดสรรก่อนรับเข้าคลัง', 'error');
+      showNotification('ยังไม่มีเขตที่จัดสรรพัสดุให้ กรุณาระบุเขตและยอดก่อนตรวจรับ', 'error');
       handleOpenAllocationModal(item);
       return;
     }
@@ -377,7 +465,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       });
       if (res.success) {
         showNotification(
-          `ตรวจรับพัสดุเข้าคลังเรียบร้อย (+Stock เพิ่ม ${totalAlloc.toLocaleString()} หน่วย)`,
+          `ตรวจรับพัสดุเข้าคลัง ต.1 เรียบร้อย (+Stock เพิ่ม ${totalAlloc.toLocaleString()} หน่วย)`,
           'success'
         );
         await onRefresh();
@@ -410,6 +498,45 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
     }
   };
 
+  // Filtered Single-Item Master Records for Incoming Tracking
+  const filteredTransfersIn = React.useMemo(() => {
+    let result = transfersIn;
+
+    if (inSearchQuery.trim()) {
+      const q = inSearchQuery.trim().toLowerCase();
+      result = result.filter((t) => {
+        const matchDdoc = t.ddoc_no.toLowerCase().includes(q);
+        const matchMatId = t.material_id.toLowerCase().includes(q);
+        const matchMatDesc = t.material_description.toLowerCase().includes(q);
+        const matchPurpose = t.purpose_note?.toLowerCase().includes(q) || false;
+        const matchAlloc =
+          t.allocations?.some(
+            (a) =>
+              a.district.toLowerCase().includes(q) ||
+              (DISTRICT_LABELS[a.district] && DISTRICT_LABELS[a.district].toLowerCase().includes(q)) ||
+              (a.sto_no && a.sto_no.toLowerCase().includes(q)) ||
+              (a.notes && a.notes.toLowerCase().includes(q))
+          ) || false;
+        return matchDdoc || matchMatId || matchMatDesc || matchPurpose || matchAlloc;
+      });
+    }
+
+    if (inStatusFilter === 'unallocated') {
+      result = result.filter((t) => {
+        const total =
+          t.allocations?.reduce((s, a) => s + (Number(a.quantity) || 0), 0) || t.allocated_qty || 0;
+        return total === 0;
+      });
+    } else if (inStatusFilter === 'pending') {
+      result = result.filter((t) => !t.stock_updated);
+    } else if (inStatusFilter === 'received') {
+      result = result.filter((t) => t.stock_updated);
+    }
+
+    return result;
+  }, [transfersIn, inSearchQuery, inStatusFilter]);
+
+  // Keep groupedTransfersIn for backward compatibility or metrics if needed
   const groupedTransfersIn = React.useMemo(() => {
     const map = new Map<
       string,
@@ -452,42 +579,8 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       }
     }
 
-    let result = Array.from(map.values());
-
-    if (inSearchQuery.trim()) {
-      const q = inSearchQuery.trim().toLowerCase();
-      result = result
-        .map((group) => {
-          const matchesDdoc = group.ddoc_no.toLowerCase().includes(q);
-          if (matchesDdoc) return group;
-          const matchingItems = group.items.filter(
-            (it) =>
-              it.material_id.toLowerCase().includes(q) ||
-              it.material_description.toLowerCase().includes(q) ||
-              it.allocations?.some(
-                (a) =>
-                  a.sto_no?.toLowerCase().includes(q) ||
-                  a.transport_method?.toLowerCase().includes(q) ||
-                  a.transport_date?.toLowerCase().includes(q) ||
-                  a.district.toLowerCase().includes(q)
-              )
-          );
-          if (matchingItems.length > 0) {
-            return { ...group, items: matchingItems };
-          }
-          return null;
-        })
-        .filter(Boolean) as typeof result;
-    }
-
-    if (inStatusFilter === 'pending') {
-      result = result.filter((g) => !g.allStockUpdated);
-    } else if (inStatusFilter === 'received') {
-      result = result.filter((g) => g.hasStockUpdated);
-    }
-
-    return result;
-  }, [transfersIn, inSearchQuery, inStatusFilter]);
+    return Array.from(map.values());
+  }, [transfersIn]);
 
   const handleDeleteTransferIn = (transfer: TransferIn) => {
     setTransferInToDelete(transfer);
@@ -757,41 +850,39 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       {/* ======================================================== */}
       {subTab === 'incoming' && (
         <div className="space-y-4">
-          {/* Minimalist Compact Metrics */}
+          {/* Top Metric Cards */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className="bg-white/90 px-3.5 py-2.5 rounded-xl border border-slate-200/70 shadow-2xs">
-              <span className="text-2xs font-medium text-slate-500 block">เลขที่ DDOC ทั้งหมด</span>
+              <span className="text-2xs font-medium text-slate-500 block">รายการขอรับโอนทั้งหมด</span>
               <div className="text-base sm:text-lg font-bold text-slate-800 font-mono mt-0.5 flex items-baseline gap-1">
-                {groupedTransfersIn.length} <span className="text-2xs font-normal text-slate-400">DDOC ({transfersIn.length} ชนิดพัสดุ)</span>
+                {transfersIn.length}{' '}
+                <span className="text-2xs font-normal text-slate-400">รายการ</span>
               </div>
             </div>
             <div className="bg-amber-50/50 px-3.5 py-2.5 rounded-xl border border-amber-200/70 shadow-2xs">
-              <span className="text-2xs font-medium text-amber-800 block">อยู่ระหว่างดำเนินการ</span>
+              <span className="text-2xs font-medium text-amber-800 block">รอระบุเขตที่ให้ได้</span>
               <div className="text-base sm:text-lg font-bold text-amber-900 font-mono mt-0.5 flex items-baseline gap-1">
-                {transfersIn.filter((t) => !t.stock_updated).length}{' '}
+                {transfersIn.filter((t) => (!t.allocations || t.allocations.length === 0) && !t.allocated_qty).length}{' '}
                 <span className="text-2xs font-normal text-amber-700/70">รายการ</span>
               </div>
             </div>
+            <div className="bg-sky-50/50 px-3.5 py-2.5 rounded-xl border border-sky-200/70 shadow-2xs">
+              <span className="text-2xs font-medium text-sky-800 block">ได้เขตแล้ว (รอตรวจรับ)</span>
+              <div className="text-base sm:text-lg font-bold text-sky-900 font-mono mt-0.5 flex items-baseline gap-1">
+                {transfersIn.filter((t) => !t.stock_updated && ((t.allocations && t.allocations.length > 0) || (t.allocated_qty || 0) > 0)).length}{' '}
+                <span className="text-2xs font-normal text-sky-700/70">รายการ</span>
+              </div>
+            </div>
             <div className="bg-teal-50/50 px-3.5 py-2.5 rounded-xl border border-teal-200/70 shadow-2xs">
-              <span className="text-2xs font-medium text-teal-800 block">ตรวจรับแล้ว (+Stock)</span>
+              <span className="text-2xs font-medium text-teal-800 block">ตรวจรับเข้า ต.1 (+Stock) แล้ว</span>
               <div className="text-base sm:text-lg font-bold text-teal-900 font-mono mt-0.5 flex items-baseline gap-1">
                 {transfersIn.filter((t) => t.stock_updated).length}{' '}
                 <span className="text-2xs font-normal text-teal-700/70">รายการ</span>
               </div>
             </div>
-            <div className="bg-sky-50/50 px-3.5 py-2.5 rounded-xl border border-sky-200/70 shadow-2xs">
-              <span className="text-2xs font-medium text-sky-800 block">ยอดรับเข้า ต.1 รวม</span>
-              <div className="text-base sm:text-lg font-bold text-sky-900 font-mono mt-0.5 flex items-baseline gap-1">
-                {transfersIn
-                  .filter((t) => t.stock_updated)
-                  .reduce((s, t) => s + (t.allocated_qty || 0), 0)
-                  .toLocaleString()}{' '}
-                <span className="text-2xs font-normal text-sky-700/70">หน่วย</span>
-              </div>
-            </div>
           </div>
 
-          {/* Search and Filters Bar */}
+          {/* Search, Status Filters & Action */}
           <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="relative w-full sm:w-96">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -805,7 +896,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
               {inSearchQuery && (
                 <button
                   onClick={() => setInSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -821,14 +912,24 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
-                ทั้งหมด ({groupedTransfersIn.length} DDOC)
+                ทั้งหมด ({transfersIn.length})
+              </button>
+              <button
+                onClick={() => setInStatusFilter('unallocated')}
+                className={`px-3 py-1 text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
+                  inStatusFilter === 'unallocated'
+                    ? 'bg-amber-600 text-white shadow-2xs'
+                    : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200/60'
+                }`}
+              >
+                รอระบุเขต
               </button>
               <button
                 onClick={() => setInStatusFilter('pending')}
                 className={`px-3 py-1 text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap ${
                   inStatusFilter === 'pending'
-                    ? 'bg-amber-600 text-white shadow-2xs'
-                    : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200/60'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-sky-50 text-sky-800 hover:bg-sky-100 border border-sky-200/60'
                 }`}
               >
                 รอตรวจรับ
@@ -846,283 +947,304 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
             </div>
           </div>
 
-          {/* Master Table Grouped by DDOC */}
-          {groupedTransfersIn.length === 0 ? (
+          {/* Master Table */}
+          {filteredTransfersIn.length === 0 ? (
             <div className="bg-white rounded-2xl border border-slate-200/80 p-12 text-center shadow-2xs">
               <div className="w-12 h-12 bg-sky-50 text-sky-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
                 <FileText className="w-6 h-6" />
               </div>
               <h4 className="text-sm font-bold text-slate-800">ไม่พบรายการขอรับโอนพัสดุจากเขตอื่น</h4>
               <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                {inSearchQuery
-                  ? 'ไม่พบข้อมูลที่ตรงกับคำค้นหา ลองเปลี่ยนคำค้นหาหรือตัวกรอง'
-                  : 'ยังไม่มีข้อมูลการขอรับโอน คลิกปุ่ม "+ ขอจัดสรร DDOC ใหม่" ด้านบนเพื่อเริ่มทำรายการ'}
+                {inSearchQuery || inStatusFilter !== 'all'
+                  ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ'
+                  : 'กดปุ่ม "+ ขอจัดสรร DDOC ใหม่" ด้านบนเพื่อเริ่มบันทึกรายการขอรับโอนพัสดุ (ครั้งละ 1 รายการ)'}
               </p>
-              {!inSearchQuery && (
-                <button
-                  onClick={() => handleOpenAddInModal()}
-                  className="mt-4 px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5 transition-colors"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>ขอจัดสรร DDOC ใหม่ (Multi-Item)</span>
-                </button>
-              )}
+              <button
+                onClick={() => handleOpenAddInModal()}
+                className="mt-4 px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5 transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ ขอรับโอนพัสดุ (1 รายการ)</span>
+              </button>
             </div>
           ) : (
-            <div className="space-y-4">
-              {groupedTransfersIn.map((group) => (
-                <div
-                  key={group.ddoc_no}
-                  className="bg-white rounded-2xl border border-slate-200/80 overflow-hidden shadow-2xs transition-shadow hover:shadow-xs"
-                >
-                  {/* DDOC Header Banner */}
-                  <div className="p-3.5 sm:p-4 bg-slate-50/90 border-b border-slate-200/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-300 rounded-xl shadow-3xs font-mono font-bold text-slate-900 text-xs">
-                        <FileText className="w-3.5 h-3.5 text-sky-600" />
-                        <span>DDOC: {group.ddoc_no}</span>
-                      </div>
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-2xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                        {group.items.length} ชนิดพัสดุ
-                      </span>
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-2xs font-semibold bg-sky-50 text-sky-800 border border-sky-200">
-                        ยอดขอรวม: {group.totalDemand.toLocaleString()} หน่วย
-                      </span>
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-2xs font-semibold bg-teal-50 text-teal-800 border border-teal-200">
-                        จัดสรรแล้ว: {group.totalAllocated.toLocaleString()} หน่วย
-                      </span>
+            <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs overflow-hidden">
+              <div className="p-3.5 bg-slate-50/80 border-b border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-sky-500" />
+                  <h3 className="font-bold text-xs sm:text-sm text-slate-800">
+                    ตาราง Master Tracking: การขอรับโอนพัสดุจากเขตอื่น
+                  </h3>
+                  <span className="text-2xs font-semibold px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-700">
+                    {filteredTransfersIn.length} รายการ
+                  </span>
+                </div>
+                <div className="text-2xs text-slate-500 flex items-center gap-3">
+                  <span>💡 กรอกครั้งละ 1 รายการวัสดุ</span>
+                  <span>• 1 รายการรับได้จากหลายเขต</span>
+                  <span>• กรอกเขตภายหลังได้</span>
+                </div>
+              </div>
 
-                      {/* Overall DDOC Status Badge */}
-                      {group.allStockUpdated ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-teal-100 text-teal-800 border border-teal-300">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>ตรวจรับเข้าคลังครบ 100% แล้ว</span>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-700 divide-y divide-slate-100">
+                  <thead className="bg-slate-50/90 text-slate-600 font-semibold uppercase border-b border-slate-200/80 text-2xs">
+                    <tr>
+                      <th className="py-3 px-3 text-center w-10">#</th>
+                      <th className="py-3 px-3 w-40">เอกสาร DDOC</th>
+                      <th className="py-3 px-3 min-w-[210px]">รายการพัสดุที่ขอรับโอน</th>
+                      <th className="py-3 px-3 text-right w-24">จำนวนที่ขอ</th>
+                      <th className="py-3 px-3 min-w-[340px]">
+                        เขตที่สามารถให้ได้ (กรอกภายหลังได้)
+                        <span className="block text-3xs font-normal text-slate-400 capitalize">
+                          (วัสดุ 1 รายการ รับได้หลายเขต, เลข STO, วันที่รับของ, หมายเหตุ)
                         </span>
-                      ) : group.hasStockUpdated ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                          <Clock className="w-3 h-3" />
-                          <span>ตรวจรับเข้าคลังบางส่วน</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-sky-100 text-sky-800 border border-sky-300">
-                          <Clock className="w-3 h-3" />
-                          <span>อยู่ระหว่างดำเนินการ</span>
-                        </span>
-                      )}
-                    </div>
+                      </th>
+                      <th className="py-3 px-3 text-center w-28">สรุปยอดจัดสรร</th>
+                      <th className="py-3 px-3 text-center w-36">ตรวจรับเข้า ต.1 (+Stock)</th>
+                      <th className="py-3 px-3 text-center w-20">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredTransfersIn.map((item, idx) => {
+                      const totalAlloc =
+                        item.allocated_qty !== undefined && item.allocated_qty > 0
+                          ? item.allocated_qty
+                          : item.allocations?.reduce((s, a) => s + (Number(a.quantity) || 0), 0) || 0;
 
-                    <div className="flex items-center gap-1.5 self-end sm:self-auto">
-                      <button
-                        onClick={() => handleOpenAddInModal(group.ddoc_no)}
-                        className="px-2.5 py-1 text-2xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg cursor-pointer inline-flex items-center gap-1 transition-colors"
-                        title="เพิ่มพัสดุชนิดอื่นใน DDOC เลขนี้"
-                      >
-                        <Plus className="w-3 h-3" />
-                        <span>+ เพิ่มพัสดุใน DDOC นี้</span>
-                      </button>
+                      const diff = item.demand_qty - totalAlloc;
+                      const hasAllocations = item.allocations && item.allocations.length > 0;
+                      const ddocDisplayDate = item.ddoc_date || item.created_at.split('T')[0];
 
-                      <button
-                        onClick={() => setDdocToDelete(group.ddoc_no)}
-                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                        title="ลบทั้ง DDOC นี้"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
+                      return (
+                        <tr
+                          key={item.id}
+                          className={`hover:bg-slate-50/70 transition-colors ${
+                            item.stock_updated ? 'bg-teal-50/20' : ''
+                          }`}
+                        >
+                          {/* 1. ลำดับ */}
+                          <td className="py-3 px-3 text-center font-mono text-2xs text-slate-400 align-top">
+                            {idx + 1}
+                          </td>
 
-                  {/* Multi-Item Table under DDOC */}
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs text-slate-700 divide-y divide-slate-100">
-                      <thead className="bg-white text-slate-500 font-semibold uppercase text-2xs border-b border-slate-200/80">
-                        <tr>
-                          <th className="py-2.5 px-4 w-52">รหัส & ชื่อพัสดุ</th>
-                          <th className="py-2.5 px-3 text-right w-24">ยอดที่ขอ</th>
-                          <th className="py-2.5 px-4">รายละเอียดจัดสรรแยกตามเขต (เขต / ยอดจัดสรร / เลขที่ STO / ขนย้าย / วันที่ขนย้าย)</th>
-                          <th className="py-2.5 px-3 text-center w-28">จัดสรรรวม & สถานะ</th>
-                          <th className="py-2.5 px-3 text-center w-36">ตรวจรับเข้า ต.1 (+Stock)</th>
-                          <th className="py-2.5 px-3 text-center w-24">จัดการ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-mono">
-                        {group.items.map((item) => {
-                          const totalAlloc =
-                            item.allocated_qty !== undefined && item.allocated_qty > 0
-                              ? item.allocated_qty
-                              : item.allocations && item.allocations.length > 0
-                              ? item.allocations.reduce((s, a) => s + (Number(a.quantity) || 0), 0)
-                              : 0;
+                          {/* 2. เอกสาร DDOC */}
+                          <td className="py-3 px-3 font-sans align-top">
+                            <div className="font-mono font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                              <FileText className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                              <span>{item.ddoc_no}</span>
+                            </div>
+                            <div className="text-3xs text-slate-400 font-mono mt-1 flex items-center gap-1">
+                              <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span>{ddocDisplayDate}</span>
+                            </div>
+                            {item.purpose_note && (
+                              <div className="text-3xs text-slate-500 mt-1 line-clamp-1 italic" title={item.purpose_note}>
+                                📌 {item.purpose_note}
+                              </div>
+                            )}
+                          </td>
 
-                          return (
-                            <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
-                              {/* รหัส & ชื่อพัสดุ */}
-                              <td className="py-3 px-4 font-sans align-top">
-                                <div className="font-mono font-bold text-slate-900 text-xs">
-                                  {item.material_id}
-                                </div>
-                                <div className="text-2xs text-slate-500 font-sans mt-0.5 line-clamp-2">
-                                  {item.material_description}
-                                </div>
-                              </td>
+                          {/* 3. รายการพัสดุที่ขอรับโอน */}
+                          <td className="py-3 px-3 font-sans align-top">
+                            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-sky-50 text-sky-800 font-mono font-bold text-xs border border-sky-200/80">
+                              <span>{item.material_id}</span>
+                            </div>
+                            <div className="text-xs font-medium text-slate-800 mt-1 leading-snug">
+                              {item.material_description}
+                            </div>
+                          </td>
 
-                              {/* ยอดที่ขอ */}
-                              <td className="py-3 px-3 text-right font-bold text-slate-900 text-sm align-top">
-                                {item.demand_qty.toLocaleString()}
-                                <div className="text-3xs font-normal text-slate-400 font-sans">หน่วย</div>
-                              </td>
+                          {/* 4. จำนวนที่ขอ */}
+                          <td className="py-3 px-3 text-right font-sans align-top">
+                            <div className="font-mono font-bold text-slate-900 text-sm">
+                              {(Number(item.demand_qty) || 0).toLocaleString()}
+                            </div>
+                            <span className="text-3xs text-slate-400">หน่วย</span>
+                          </td>
 
-                              {/* รายละเอียดจัดสรรแยกตามเขต (Multi-District, STO, Transport Method, Transport Date) */}
-                              <td className="py-2.5 px-4 font-sans align-top">
-                                {item.allocations && item.allocations.length > 0 ? (
-                                  <div className="space-y-1.5">
-                                    <div className="rounded-xl border border-slate-200/80 overflow-hidden bg-slate-50/60 shadow-3xs">
-                                      <table className="w-full text-left text-2xs divide-y divide-slate-200/60">
-                                        <thead className="bg-slate-100/90 text-slate-600 font-semibold uppercase">
-                                          <tr>
-                                            <th className="py-1 px-2.5">เขต</th>
-                                            <th className="py-1 px-2.5 text-right">จำนวนจัดสรร</th>
-                                            <th className="py-1 px-2.5">เลขที่ STO</th>
-                                            <th className="py-1 px-2.5">วิธีขนย้าย</th>
-                                            <th className="py-1 px-2.5">วันที่ขนย้าย</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100 bg-white font-sans">
-                                          {item.allocations.map((alloc, aIdx) => (
-                                            <tr key={aIdx} className="hover:bg-slate-50/80">
-                                              <td className="py-1.5 px-2.5">
-                                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-2xs font-bold bg-sky-100/80 text-sky-800 border border-sky-200/70">
-                                                  {DISTRICT_LABELS[alloc.district] || alloc.district}
-                                                </span>
-                                              </td>
-                                              <td className="py-1.5 px-2.5 text-right font-mono font-bold text-slate-800">
-                                                {alloc.quantity.toLocaleString()} <span className="text-3xs font-normal text-slate-400">หน่วย</span>
-                                              </td>
-                                              <td className="py-1.5 px-2.5 font-mono">
-                                                {alloc.sto_no ? (
-                                                  <span className="text-slate-900 font-semibold bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/70 text-3xs">
-                                                    STO: {alloc.sto_no}
-                                                  </span>
-                                                ) : (
-                                                  <span className="text-slate-400 italic text-3xs">ยังไม่ระบุ</span>
-                                                )}
-                                              </td>
-                                              <td className="py-1.5 px-2.5 text-slate-600 truncate max-w-[130px]">
-                                                {alloc.transport_method || <span className="text-slate-400 italic text-3xs">-</span>}
-                                              </td>
-                                              <td className="py-1.5 px-2.5 text-slate-600">
-                                                {alloc.transport_date ? (
-                                                  <span className="inline-flex items-center gap-1 text-3xs font-mono text-slate-700">
-                                                    <Calendar className="w-3 h-3 text-slate-400" />
-                                                    {alloc.transport_date}
-                                                  </span>
-                                                ) : (
-                                                  <span className="text-slate-400 italic text-3xs">-</span>
-                                                )}
-                                              </td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                    <div className="flex items-center justify-end">
-                                      <button
-                                        onClick={() => handleOpenAllocationModal(item)}
-                                        className="text-2xs text-sky-600 hover:text-sky-800 font-semibold cursor-pointer inline-flex items-center gap-1 hover:underline"
-                                      >
-                                        <Edit3 className="w-3 h-3" />
-                                        <span>จัดการเขต / STO / ขนย้าย ({item.allocations.length} เขต)</span>
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="py-1.5 flex items-center gap-2">
-                                    <span className="text-2xs text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 font-medium">
-                                      ยังไม่ได้ระบุเขตที่จัดสรร
-                                    </span>
-                                    <button
-                                      onClick={() => handleOpenAllocationModal(item)}
-                                      className="text-2xs text-sky-700 hover:text-sky-900 font-bold px-2.5 py-1 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 cursor-pointer inline-flex items-center gap-1 transition-colors"
+                          {/* 5. เขตที่สามารถให้ได้ (กรอกภายหลังได้) */}
+                          <td className="py-3 px-3 font-sans align-top">
+                            {hasAllocations ? (
+                              <div className="space-y-1.5">
+                                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                                  {item.allocations!.map((alloc, aIdx) => (
+                                    <div
+                                      key={aIdx}
+                                      className="p-2 bg-slate-50/90 rounded-lg border border-slate-200/80 text-xs flex flex-col gap-1"
                                     >
-                                      <Plus className="w-3 h-3" />
-                                      <span>+ ระบุเขต & STO & ขนย้าย</span>
-                                    </button>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="px-2 py-0.5 rounded-md text-2xs font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                                            {DISTRICT_LABELS[alloc.district] || alloc.district}
+                                          </span>
+                                        </div>
+                                        <span className="font-mono font-bold text-sky-950 text-xs">
+                                          {(Number(alloc.quantity) || 0).toLocaleString()} หน่วย
+                                        </span>
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-3xs text-slate-600 mt-0.5">
+                                        {alloc.sto_no ? (
+                                          <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 font-bold text-teal-700">
+                                            STO: {alloc.sto_no}
+                                          </span>
+                                        ) : (
+                                          <span className="text-amber-700 italic">รอ STO</span>
+                                        )}
+
+                                        {alloc.receive_date ? (
+                                          <span className="text-slate-600 inline-flex items-center gap-0.5">
+                                            <Calendar className="w-2.5 h-2.5 text-slate-400" />
+                                            <span>รับ: {alloc.receive_date}</span>
+                                          </span>
+                                        ) : null}
+
+                                        {alloc.notes ? (
+                                          <span className="text-slate-500 italic truncate max-w-[180px]" title={alloc.notes}>
+                                            • {alloc.notes}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                <div className="pt-0.5 flex items-center justify-between">
+                                  <button
+                                    onClick={() => handleOpenAllocationModal(item)}
+                                    className="text-2xs text-sky-600 hover:text-sky-800 font-semibold cursor-pointer inline-flex items-center gap-1 hover:underline"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>จัดการเขต / STO / วันที่รับ ({item.allocations!.length} เขต)</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : item.origin_district ? (
+                              <div className="p-2 bg-slate-50 rounded-lg border border-slate-200 text-xs">
+                                <div className="flex items-center justify-between">
+                                  <span className="px-2 py-0.5 rounded-md text-2xs font-bold bg-sky-100 text-sky-800">
+                                    {DISTRICT_LABELS[item.origin_district] || item.origin_district}
+                                  </span>
+                                  <span className="font-mono font-bold text-slate-900">
+                                    {(item.allocated_qty || item.demand_qty).toLocaleString()} หน่วย
+                                  </span>
+                                </div>
+                                {item.sto_no && (
+                                  <div className="text-3xs text-teal-700 font-mono mt-1">
+                                    STO: {item.sto_no}
                                   </div>
                                 )}
-                              </td>
+                              </div>
+                            ) : (
+                              <div className="py-1 flex items-center gap-2">
+                                <span className="text-2xs text-amber-700 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200 font-medium">
+                                  ยังไม่ได้ระบุเขต (กรอกภายหลังได้)
+                                </span>
+                                <button
+                                  onClick={() => handleOpenAllocationModal(item)}
+                                  className="text-2xs text-sky-700 hover:text-sky-900 font-bold px-2.5 py-1 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 cursor-pointer inline-flex items-center gap-1 transition-colors"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>+ ระบุเขตที่ให้ได้</span>
+                                </button>
+                              </div>
+                            )}
+                          </td>
 
-                              {/* จัดสรรรวม & สถานะ */}
-                              <td className="py-3 px-3 text-center font-sans align-top">
-                                <div className="font-mono font-bold text-sky-700 text-sm">
-                                  {totalAlloc > 0 ? totalAlloc.toLocaleString() : '-'}
+                          {/* 6. สรุปยอดจัดสรร */}
+                          <td className="py-3 px-3 text-center font-sans align-top">
+                            <div className="font-mono font-bold text-sky-700 text-sm">
+                              {totalAlloc > 0 ? totalAlloc.toLocaleString() : '-'}
+                            </div>
+                            <div className="mt-1">
+                              {totalAlloc >= item.demand_qty ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                                  ✓ ครบ 100%
+                                </span>
+                              ) : totalAlloc > 0 ? (
+                                <div>
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                    จัดสรรบางส่วน
+                                  </span>
+                                  <span className="text-3xs text-amber-600 block mt-0.5">
+                                    ขาดอีก {diff.toLocaleString()} หน่วย
+                                  </span>
                                 </div>
-                                <div className="mt-1">
-                                  {totalAlloc >= item.demand_qty ? (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                                      ✓ ครบ 100%
-                                    </span>
-                                  ) : totalAlloc > 0 ? (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                                      จัดสรรบางส่วน
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-slate-100 text-slate-600">
-                                      รอจัดสรร
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-3xs font-bold bg-slate-100 text-slate-600">
+                                  รอระบุเขต
+                                </span>
+                              )}
+                            </div>
+                          </td>
 
-                              {/* ตรวจรับเข้า ต.1 (+Stock) */}
-                              <td className="py-3 px-3 text-center font-sans align-top">
-                                {item.stock_updated ? (
-                                  <div className="inline-flex flex-col items-center gap-0.5 px-2.5 py-1 rounded-xl text-2xs font-bold bg-teal-50 text-teal-700 border border-teal-200">
-                                    <div className="flex items-center gap-1">
-                                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
-                                      <span>+Stock แล้ว</span>
-                                    </div>
-                                    <span className="font-mono text-3xs font-semibold text-teal-800">
-                                      {totalAlloc.toLocaleString()} หน่วย
-                                    </span>
-                                  </div>
-                                ) : (
+                          {/* 7. ตรวจรับเข้า ต.1 (+Stock) */}
+                          <td className="py-3 px-3 text-center font-sans align-top">
+                            {item.stock_updated ? (
+                              <div className="inline-flex flex-col items-center gap-0.5 px-2.5 py-1.5 rounded-xl text-2xs font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                                <div className="flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                                  <span>+Stock เข้า ต.1 แล้ว</span>
+                                </div>
+                                <span className="font-mono text-3xs font-semibold text-teal-800">
+                                  +{totalAlloc.toLocaleString()} หน่วย
+                                </span>
+                                {item.received_at && (
+                                  <span className="text-3xs text-slate-400 font-sans">
+                                    {item.received_at.split('T')[0]}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div>
+                                {totalAlloc > 0 ? (
                                   <button
                                     onClick={() => handleDirectReceiveIn(item)}
                                     className="px-3 py-1.5 bg-teal-500 hover:bg-teal-600 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer transition-colors inline-flex items-center gap-1"
-                                    title="ตรวจรับและเพิ่ม Stock ตามยอดจัดสรรจริง"
+                                    title="ตรวจรับพัสดุและเพิ่ม Stock คลัง ต.1 ทันที"
                                   >
                                     <Plus className="w-3.5 h-3.5" />
-                                    <span>+Stock เข้าคลัง</span>
+                                    <span>+ ตรวจรับเข้า ต.1</span>
                                   </button>
-                                )}
-                              </td>
-
-                              {/* จัดการ */}
-                              <td className="py-3 px-3 text-center font-sans align-top">
-                                <div className="flex items-center justify-center gap-1">
+                                ) : (
                                   <button
                                     onClick={() => handleOpenAllocationModal(item)}
-                                    className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg cursor-pointer transition-colors"
-                                    title="แก้ไขข้อมูลเขต, STO, ขนย้าย"
+                                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-2xs font-medium cursor-pointer transition-colors inline-flex items-center gap-1"
+                                    title="ระบุเขตที่จัดสรรก่อนตรวจรับเข้าสต็อก"
                                   >
-                                    <Edit3 className="w-3.5 h-3.5" />
+                                    <span>ระบุเขตก่อนตรวจรับ</span>
                                   </button>
-                                  <button
-                                    onClick={() => handleDeleteTransferIn(item)}
-                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                                    title="ลบพัสดุรายการนี้ออกจาก DDOC"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ))}
+                                )}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* 8. จัดการ */}
+                          <td className="py-3 px-3 text-center font-sans align-top">
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => handleOpenAllocationModal(item)}
+                                className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg cursor-pointer transition-colors"
+                                title="แก้ไขข้อมูล / จัดการเขต"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTransferIn(item)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                title="ลบรายการขอรับโอนนี้"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -1346,110 +1468,292 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* MODAL 1: ขอจัดสรร DDOC ใหม่ (Multi-Item)                  */}
+      {/* MODAL 1: ขอรับโอนพัสดุจากเขตอื่น (ครั้งละ 1 รายการวัสดุ)    */}
       {/* ======================================================== */}
       {showAddInModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-xl max-w-xl w-full overflow-hidden border border-slate-200/80 max-h-[90vh] flex flex-col">
-            <div className="p-4 bg-slate-50/80 border-b border-slate-200/80 flex items-center justify-between">
+          <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full overflow-hidden border border-slate-200/80 max-h-[92vh] flex flex-col">
+            <div className="p-4 bg-slate-50/80 border-b border-slate-200/80 flex items-center justify-between shrink-0">
               <div>
-                <h3 className="font-bold text-sm text-slate-800">ขอจัดสรร DDOC ใหม่ (Multi-Item)</h3>
-                <p className="text-2xs text-slate-500">ใน 1 เลข DDOC สามารถขอรับพัสดุได้หลายชนิดพร้อมกัน</p>
+                <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-sky-600" />
+                  <span>บันทึกขอรับโอนพัสดุจากเขตอื่น</span>
+                </h3>
+                <p className="text-2xs text-slate-500 mt-0.5">
+                  กรอกครั้งละ 1 รายการวัสดุ • ระบุเขตที่สามารถให้ได้ภายหลังได้ หรือกรอกได้ทันที
+                </p>
               </div>
               <button
                 onClick={() => setShowAddInModal(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded-lg hover:bg-slate-100"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleCreateTransferIn} className="p-5 space-y-4 overflow-y-auto flex-1">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  เลขที่หนังสือ DDOC *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={inDdocNo}
-                  onChange={(e) => setInDdocNo(e.target.value)}
-                  placeholder="เช่น DDOC-2026-0881"
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-sky-400 font-mono font-bold"
-                />
+              {/* 1. เอกสาร DDOC */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50/80 p-3.5 rounded-xl border border-slate-200/70">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    เลขที่หนังสือ DDOC *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={inDdocNo}
+                    onChange={(e) => setInDdocNo(e.target.value)}
+                    placeholder="เช่น DDOC-2026-0881"
+                    className="w-full px-3 py-2 text-xs font-mono font-bold border border-slate-300 rounded-xl focus:ring-2 focus:ring-sky-400 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    วันที่หนังสือ DDOC *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={inDdocDate}
+                    onChange={(e) => setInDdocDate(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-sky-400 bg-white"
+                  />
+                </div>
               </div>
 
-              <div className="space-y-2">
+              {/* 2. รายการพัสดุ (จำกัด 1 รายการวัสดุเท่านั้น) */}
+              <div className="space-y-3 p-3.5 bg-sky-50/40 rounded-xl border border-sky-100">
                 <div className="flex items-center justify-between">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    รายการพัสดุที่ขอรับโอน ({inItems.length} รายการ) *
+                  <label className="block text-xs font-bold text-slate-800">
+                    รายการพัสดุที่ขอรับโอน (1 รายการ) *
                   </label>
-                  <button
-                    type="button"
-                    onClick={handleAddInItemRow}
-                    className="inline-flex items-center gap-1 text-xs text-sky-700 hover:text-sky-800 font-semibold px-2.5 py-1 bg-sky-50 hover:bg-sky-100 rounded-xl border border-sky-200/80 cursor-pointer transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>+ เพิ่มพัสดุ</span>
-                  </button>
-                </div>
-
-                <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
-                  {inItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80"
-                    >
-                      <span className="text-2xs font-mono font-bold text-slate-400 w-5 text-center">
-                        {idx + 1}
-                      </span>
-                      <select
-                        value={item.material_id}
-                        onChange={(e) => handleInItemChange(idx, 'material_id', e.target.value)}
-                        className="flex-1 px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono bg-white"
-                      >
-                        {materials.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.id} : {m.description}
-                          </option>
-                        ))}
-                      </select>
-
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          min="1"
-                          required
-                          value={item.demand_qty || ''}
-                          onChange={(e) => handleInItemChange(idx, 'demand_qty', e.target.value)}
-                          placeholder="ยอดขอ"
-                          className="w-24 px-2 py-1.5 text-xs border border-slate-300 rounded-lg text-right font-mono font-bold bg-white"
-                        />
-                        <span className="text-3xs text-slate-500">หน่วย</span>
-                      </div>
-
-                      {inItems.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveInItemRow(idx)}
-                          className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg cursor-pointer transition-colors"
-                          title="ลบแถวนี้"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="p-3 bg-sky-50/60 rounded-xl border border-sky-100 flex items-center justify-between text-xs font-semibold text-sky-900">
-                  <span>ยอดขอรวมทุกชนิดใน DDOC นี้:</span>
-                  <span className="font-mono font-bold text-sm">
-                    {inItems.reduce((sum, it) => sum + (Number(it.demand_qty) || 0), 0).toLocaleString()} หน่วย
+                  <span className="text-3xs font-semibold px-2 py-0.5 rounded-md bg-sky-100 text-sky-800">
+                    กรอกครั้งละ 1 รายการวัสดุ
                   </span>
                 </div>
+
+                <div>
+                  <label className="block text-3xs font-semibold text-slate-600 mb-1">
+                    เลือกพัสดุ *
+                  </label>
+                  <select
+                    value={inMaterialId}
+                    onChange={(e) => setInMaterialId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl font-mono bg-white focus:ring-2 focus:ring-sky-400"
+                  >
+                    {materials.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} : {m.description} (Stock ต.1: {(Number(m.current_warehouse) || 0).toLocaleString()})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-3xs font-semibold text-slate-600 mb-1">
+                      จำนวนที่ขอรับโอน *
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        required
+                        value={inDemandQty || ''}
+                        onChange={(e) => setInDemandQty(Number(e.target.value) || 0)}
+                        placeholder="ระบุจำนวน"
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl font-mono font-bold text-right bg-white focus:ring-2 focus:ring-sky-400"
+                      />
+                      <span className="text-xs font-medium text-slate-500 whitespace-nowrap">หน่วย</span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-3xs font-semibold text-slate-600 mb-1">
+                      หมายเหตุ / โครงการที่ขอใช้
+                    </label>
+                    <input
+                      type="text"
+                      value={inPurposeNote}
+                      onChange={(e) => setInPurposeNote(e.target.value)}
+                      placeholder="เช่น ขยายเขตแรงสูง อ.ชะอำ"
+                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-sky-400"
+                    />
+                  </div>
+                </div>
               </div>
 
+              {/* 3. เขตที่สามารถให้ได้ (กรอกภายหลังได้) */}
+              <div className="space-y-3 p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-bold text-slate-800 block">
+                      เขตที่สามารถให้ได้
+                    </label>
+                    <span className="text-3xs text-slate-500 block">
+                      (วัสดุ 1 รายการ สามารถรับได้จากหลายเขต, เลข STO, วันที่รับของ, หมายเหตุ)
+                    </span>
+                  </div>
+                  <label className="inline-flex items-center gap-2 cursor-pointer bg-white px-2.5 py-1 rounded-lg border border-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={inSpecifyDistrictsNow}
+                      onChange={(e) => {
+                        setInSpecifyDistrictsNow(e.target.checked);
+                        if (e.target.checked && inAllocations.length === 0) {
+                          handleAddInAllocationRow();
+                        }
+                      }}
+                      className="w-4 h-4 rounded text-sky-600 focus:ring-sky-500 border-slate-300 cursor-pointer"
+                    />
+                    <span className="text-2xs font-semibold text-slate-700">
+                      ระบุเขตที่ได้ทันที
+                    </span>
+                  </label>
+                </div>
+
+                {inSpecifyDistrictsNow ? (
+                  <div className="space-y-2.5 pt-2 border-t border-slate-200/70">
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xs text-slate-600 font-medium">
+                        รายการเขตที่จัดสรรให้ ({inAllocations.length} เขต):
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleAddInAllocationRow}
+                        className="text-2xs text-sky-700 hover:text-sky-900 font-bold px-2 py-1 bg-sky-50 hover:bg-sky-100 rounded-lg border border-sky-200 cursor-pointer inline-flex items-center gap-1 transition-colors"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>+ เพิ่มเขตที่ให้ได้</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                      {inAllocations.map((alloc, aIdx) => (
+                        <div
+                          key={aIdx}
+                          className="p-2.5 bg-white rounded-xl border border-slate-200/80 space-y-2 shadow-3xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-3xs font-bold text-slate-500">
+                              เขตจัดสรร #{aIdx + 1}
+                            </span>
+                            {inAllocations.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveInAllocationRow(aIdx)}
+                                className="text-slate-400 hover:text-rose-600 text-3xs cursor-pointer p-0.5"
+                              >
+                                ลบเขตนี้
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-3xs font-medium text-slate-600 mb-0.5">
+                                เขต *
+                              </label>
+                              <select
+                                value={alloc.district}
+                                onChange={(e) =>
+                                  handleUpdateInAllocationRow(aIdx, 'district', e.target.value as District)
+                                }
+                                className="w-full px-2 py-1 text-xs border border-slate-300 rounded-lg bg-white"
+                              >
+                                {DISTRICTS.map((d) => (
+                                  <option key={d} value={d}>
+                                    {DISTRICT_LABELS[d]}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div>
+                              <label className="block text-3xs font-medium text-slate-600 mb-0.5">
+                                จำนวนจัดสรร *
+                              </label>
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  required
+                                  value={alloc.quantity || ''}
+                                  onChange={(e) =>
+                                    handleUpdateInAllocationRow(aIdx, 'quantity', Number(e.target.value) || 0)
+                                  }
+                                  className="w-full px-2 py-1 text-xs font-mono font-bold text-right border border-slate-300 rounded-lg"
+                                />
+                                <span className="text-3xs text-slate-400">หน่วย</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <label className="block text-3xs font-medium text-slate-600 mb-0.5">
+                                เลขที่ STO
+                              </label>
+                              <input
+                                type="text"
+                                value={alloc.sto_no}
+                                onChange={(e) =>
+                                  handleUpdateInAllocationRow(aIdx, 'sto_no', e.target.value)
+                                }
+                                placeholder="เช่น 100452391"
+                                className="w-full px-2 py-1 text-xs font-mono border border-slate-300 rounded-lg"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-3xs font-medium text-slate-600 mb-0.5">
+                                วันที่รับของ
+                              </label>
+                              <input
+                                type="date"
+                                value={alloc.receive_date}
+                                onChange={(e) =>
+                                  handleUpdateInAllocationRow(aIdx, 'receive_date', e.target.value)
+                                }
+                                className="w-full px-2 py-1 text-xs font-mono border border-slate-300 rounded-lg"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-3xs font-medium text-slate-600 mb-0.5">
+                                หมายเหตุ
+                              </label>
+                              <input
+                                type="text"
+                                value={alloc.notes}
+                                onChange={(e) =>
+                                  handleUpdateInAllocationRow(aIdx, 'notes', e.target.value)
+                                }
+                                placeholder="หมายเหตุเพิ่มเติม"
+                                className="w-full px-2 py-1 text-xs border border-slate-300 rounded-lg"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="p-2.5 bg-sky-50 rounded-xl border border-sky-200/70 flex items-center justify-between text-xs">
+                      <span className="text-sky-900 font-medium">ยอดจัดสรรรวมจากทุกเขต:</span>
+                      <span className="font-mono font-bold text-sky-900">
+                        {inAllocations.reduce((sum, a) => sum + (Number(a.quantity) || 0), 0).toLocaleString()} /{' '}
+                        {Number(inDemandQty || 0).toLocaleString()} หน่วย
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-amber-50/70 border border-amber-200/70 rounded-xl text-2xs text-amber-800">
+                    💡 ยังไม่ได้ระบุเขตในขั้นตอนนี้ สามารถบันทึกไว้ก่อน แล้วมากรอกเขตที่สามารถให้ได้ในภายหลังเมื่อได้รับการยืนยัน
+                  </div>
+                )}
+              </div>
+
+              {/* Submit Buttons */}
               <div className="pt-3 border-t border-slate-100 flex justify-end gap-2">
                 <button
                   type="button"
@@ -1463,7 +1767,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                   disabled={isProcessingIn}
                   className="px-5 py-2 bg-sky-500 hover:bg-sky-600 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer transition-colors"
                 >
-                  {isProcessingIn ? 'กำลังบันทึก...' : `บันทึกขอจัดสรร (${inItems.length} รายการ)`}
+                  {isProcessingIn ? 'กำลังบันทึก...' : 'บันทึกขอรับโอนพัสดุ'}
                 </button>
               </div>
             </form>
@@ -1472,14 +1776,15 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
       )}
 
       {/* ======================================================== */}
-      {/* MODAL 2: จัดการเขต & STO & ขนย้าย & ตรวจรับ (Multi-District) */}
+      {/* MODAL 2: จัดการเขตที่ให้ได้ & STO & วันที่รับของ & ตรวจรับ */}
       {/* ======================================================== */}
       {activeInTransfer && (() => {
         const currentAllocatedTotal = allocationsList.reduce(
           (sum, item) => sum + (Number(item.quantity) || 0),
           0
         );
-        const currentDemandDiff = activeInTransfer.demand_qty - currentAllocatedTotal;
+        const demand = Number(editDemandQty) || activeInTransfer.demand_qty;
+        const currentDemandDiff = demand - currentAllocatedTotal;
         const isOverDemand = currentDemandDiff < 0;
         const isAllocInvalid =
           allocationsList.length === 0 ||
@@ -1493,7 +1798,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-sm text-slate-800">
-                      จัดการจัดสรรรายเขต: {activeInTransfer.ddoc_no}
+                      จัดการข้อมูลขอรับโอน & เขตที่ให้ได้: {editDdocNo}
                     </span>
                     <span className="px-2 py-0.5 rounded-full text-3xs font-mono font-bold bg-sky-100 text-sky-800">
                       {activeInTransfer.material_id}
@@ -1503,30 +1808,78 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                 </div>
                 <button
                   onClick={() => setActiveInTransfer(null)}
-                  className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded-lg hover:bg-slate-100"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
               <div className="p-5 space-y-4 overflow-y-auto flex-1">
-                {/* Note Banner */}
-                <div className="p-3 bg-sky-50/70 border border-sky-200/80 rounded-xl text-xs text-sky-900 flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-sky-600 mt-1.5 shrink-0" />
-                  <span>
-                    พัสดุชนิดนี้สามารถขอรับมาจาก<strong>หลายเขต</strong>ได้ โดยแต่ละเขตจะมี<strong>เลขที่ STO, วิธีขนย้าย และวันที่ขนย้ายต่างกัน</strong>
-                  </span>
+                {/* DDOC & Demand Basic Info */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 bg-slate-50/80 p-3 rounded-xl border border-slate-200/80">
+                  <div>
+                    <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
+                      เลขที่ DDOC *
+                    </label>
+                    <input
+                      type="text"
+                      value={editDdocNo}
+                      onChange={(e) => setEditDdocNo(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono font-bold border border-slate-300 rounded-lg bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
+                      วันที่ DDOC
+                    </label>
+                    <input
+                      type="date"
+                      value={editDdocDate}
+                      onChange={(e) => setEditDdocDate(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs font-mono border border-slate-300 rounded-lg bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
+                      จำนวนที่ขอ *
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="1"
+                        value={editDemandQty}
+                        onChange={(e) => setEditDemandQty(Number(e.target.value) || 0)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono font-bold text-right border border-slate-300 rounded-lg bg-white"
+                      />
+                      <span className="text-3xs text-slate-400">หน่วย</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-3xs font-semibold text-slate-600 mb-1">
+                    หมายเหตุ / วัตถุประสงค์
+                  </label>
+                  <input
+                    type="text"
+                    value={editPurposeNote}
+                    onChange={(e) => setEditPurposeNote(e.target.value)}
+                    placeholder="ระบุหมายเหตุโครงการหรือรายละเอียดเพิ่มเติม"
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg"
+                  />
                 </div>
 
                 {/* District Allocation Rows */}
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between">
                     <div>
-                      <label className="block text-xs font-bold text-slate-700">
-                        เขตที่จัดสรรให้ ({allocationsList.length} เขต) *
+                      <label className="block text-xs font-bold text-slate-800">
+                        เขตที่สามารถให้ได้ ({allocationsList.length} เขต)
                       </label>
-                      <p className="text-2xs text-slate-500">
-                        ระบุเขต, ยอดจัดสรร, เลขที่ STO, วิธีขนย้าย, และวันที่ขนย้ายของแต่ละเขต
+                      <p className="text-3xs text-slate-500">
+                        วัสดุ 1 รายการสามารถรับได้จากหลายเขต • ระบุเขต, ยอดจัดสรร, STO, วันที่รับของ, หมายเหตุ
                       </p>
                     </div>
                     <button
@@ -1535,13 +1888,13 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                       className="inline-flex items-center gap-1 text-xs text-sky-700 hover:text-sky-800 font-semibold px-2.5 py-1 bg-sky-50 hover:bg-sky-100 rounded-xl border border-sky-200/80 cursor-pointer transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>+ เพิ่มเขตจัดสรร</span>
+                      <span>+ เพิ่มเขตที่ให้ได้</span>
                     </button>
                   </div>
 
                   {allocationsList.length === 0 ? (
                     <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-xl">
-                      <p className="text-xs text-slate-500 mb-2">ยังไม่ได้เพิ่มเขตที่จัดสรร</p>
+                      <p className="text-xs text-slate-500 mb-2">ยังไม่ได้ระบุเขตที่สามารถให้ได้</p>
                       <button
                         type="button"
                         onClick={handleAddAllocationRow}
@@ -1555,33 +1908,31 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                       {allocationsList.map((row, idx) => (
                         <div
                           key={idx}
-                          className="p-3 bg-slate-50/80 rounded-xl border border-slate-200/90 space-y-2 relative"
+                          className="p-3 bg-slate-50/90 rounded-xl border border-slate-200 space-y-2.5 shadow-3xs"
                         >
                           <div className="flex items-center justify-between pb-1.5 border-b border-slate-200/60">
                             <span className="text-2xs font-bold text-slate-700">
                               เขตจัดสรรลำดับที่ {idx + 1}
                             </span>
-                            {allocationsList.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveAllocationRow(idx)}
-                                className="text-slate-400 hover:text-rose-600 p-1 rounded-lg cursor-pointer transition-colors inline-flex items-center gap-1 text-2xs"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>ลบเขตนี้</span>
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAllocationRow(idx)}
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg cursor-pointer transition-colors inline-flex items-center gap-1 text-3xs"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>ลบเขตนี้</span>
+                            </button>
                           </div>
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             <div>
                               <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
-                                เขตที่โอนให้ *
+                                เขตที่สามารถให้ได้ *
                               </label>
                               <select
                                 value={row.district}
-                                onChange={(e) => handleUpdateAllocationField(idx, 'district', e.target.value as District)}
-                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-400 bg-white"
+                                onChange={(e) => handleUpdateAllocationRow(idx, 'district', e.target.value as District)}
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
                               >
                                 {DISTRICTS.map((d) => (
                                   <option key={d} value={d}>
@@ -1601,9 +1952,9 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                                   min="1"
                                   required
                                   value={row.quantity || ''}
-                                  onChange={(e) => handleUpdateAllocationField(idx, 'quantity', e.target.value)}
+                                  onChange={(e) => handleUpdateAllocationRow(idx, 'quantity', Number(e.target.value) || 0)}
                                   placeholder="จำนวน"
-                                  className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono font-bold text-right focus:ring-2 focus:ring-sky-400 bg-white"
+                                  className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono font-bold text-right bg-white"
                                 />
                                 <span className="text-3xs text-slate-500">หน่วย</span>
                               </div>
@@ -1618,34 +1969,34 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                               <input
                                 type="text"
                                 value={row.sto_no || ''}
-                                onChange={(e) => handleUpdateAllocationField(idx, 'sto_no', e.target.value)}
+                                onChange={(e) => handleUpdateAllocationRow(idx, 'sto_no', e.target.value)}
                                 placeholder="เช่น 100452391"
-                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono focus:ring-2 focus:ring-sky-400 bg-white"
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono bg-white"
                               />
                             </div>
 
                             <div>
                               <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
-                                วิธีขนย้าย
-                              </label>
-                              <input
-                                type="text"
-                                value={row.transport_method || ''}
-                                onChange={(e) => handleUpdateAllocationField(idx, 'transport_method', e.target.value)}
-                                placeholder="เช่น รถ 6 ล้อ คลัง ต.1"
-                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-400 bg-white"
-                              />
-                            </div>
-
-                            <div>
-                              <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
-                                วันที่ขนย้าย
+                                วันที่รับของ
                               </label>
                               <input
                                 type="date"
-                                value={row.transport_date || ''}
-                                onChange={(e) => handleUpdateAllocationField(idx, 'transport_date', e.target.value)}
-                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono focus:ring-2 focus:ring-sky-400 bg-white"
+                                value={row.receive_date || ''}
+                                onChange={(e) => handleUpdateAllocationRow(idx, 'receive_date', e.target.value)}
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono bg-white"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-3xs font-semibold text-slate-600 mb-0.5">
+                                หมายเหตุ
+                              </label>
+                              <input
+                                type="text"
+                                value={row.notes || ''}
+                                onChange={(e) => handleUpdateAllocationRow(idx, 'notes', e.target.value)}
+                                placeholder="เช่น ส่งมอบหน้าคลัง ต.1"
+                                className="w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
                               />
                             </div>
                           </div>
@@ -1659,7 +2010,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                     <div className="flex justify-between items-center">
                       <span className="text-slate-600">จำนวนที่ขอตาม DDOC:</span>
                       <span className="font-bold text-slate-900 font-mono">
-                        {activeInTransfer.demand_qty.toLocaleString()} หน่วย
+                        {demand.toLocaleString()} หน่วย
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
@@ -1710,7 +2061,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                     disabled={isProcessingIn || isAllocInvalid}
                     className="px-4 py-2 bg-sky-500 hover:bg-sky-600 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl shadow-2xs cursor-pointer disabled:cursor-not-allowed transition-colors"
                   >
-                    {isProcessingIn ? 'กำลังบันทึก...' : 'บันทึกข้อมูลจัดสรร & STO & ขนย้าย'}
+                    {isProcessingIn ? 'กำลังบันทึก...' : 'บันทึกข้อมูล'}
                   </button>
 
                   {!activeInTransfer.stock_updated && (
@@ -1721,7 +2072,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
                       className="px-4 py-2 bg-teal-500 hover:bg-teal-600 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl shadow-2xs cursor-pointer disabled:cursor-not-allowed transition-colors inline-flex items-center gap-1.5"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>บันทึกและตรวจรับเข้าคลัง ต.1 (+Stock ทันที)</span>
+                      <span>ตรวจรับเข้า ต.1 (+Stock ทันที)</span>
                     </button>
                   )}
                 </div>
@@ -2005,7 +2356,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
               </div>
               <div className="flex justify-between py-1">
                 <span className="text-slate-500">ยอดขอจัดสรร:</span>
-                <span className="font-mono font-bold text-slate-800">{transferInToDelete.demand_qty.toLocaleString()} หน่วย</span>
+                <span className="font-mono font-bold text-slate-800">{(Number(transferInToDelete.demand_qty) || 0).toLocaleString()} หน่วย</span>
               </div>
             </div>
 
@@ -2013,7 +2364,7 @@ export const TransferTrackingView: React.FC<TransferTrackingViewProps> = ({
               <div className="p-3 rounded-xl bg-amber-50/90 border border-amber-200 text-amber-900 text-xs flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <span>
-                  รายการนี้เคยตรวจรับและเพิ่มสต็อกเข้าคลังแล้ว ({(transferInToDelete.allocated_qty || 0).toLocaleString()} หน่วย) ระบบจะทำการปรับลดยอด Stock ในคลังและ SAP ออกให้อัตโนมัติ
+                  รายการนี้เคยตรวจรับและเพิ่มสต็อกเข้าคลังแล้ว ({(Number(transferInToDelete.allocated_qty) || (transferInToDelete.allocations || []).reduce((sum, a) => sum + (Number(a.quantity) || 0), 0)).toLocaleString()} หน่วย) ระบบจะทำการปรับลดยอด Stock ในคลังและ SAP ออกให้อัตโนมัติ
                 </span>
               </div>
             )}

@@ -116,8 +116,10 @@ export interface DistrictAllocation {
   district: District;
   quantity: number;
   sto_no?: string; // เลขที่ STO เฉพาะเขต
+  receive_date?: string; // วันที่รับของ
   transport_method?: string; // วิธีขนย้ายเฉพาะเขต
   transport_date?: string; // วันที่ขนย้ายเฉพาะเขต
+  notes?: string; // หมายเหตุ
   is_received?: boolean; // สถานะรับเข้าคลังของเขตนี้
   received_at?: string;
 }
@@ -125,9 +127,11 @@ export interface DistrictAllocation {
 export interface TransferIn {
   id: string;
   ddoc_no: string; // เลขที่หนังสือ DDOC
+  ddoc_date?: string; // วันที่ทำหนังสือ DDOC
   material_id: string;
   material_description: string;
   demand_qty: number;
+  purpose_note?: string; // วัตถุประสงค์ / หมายเหตุโครงการ
   origin_district?: District; // เขตที่จัดสรรให้ (backward compatibility)
   allocations?: DistrictAllocation[]; // รายการจัดสรรแยกเขต
   sto_no?: string; // เลขที่ STO
